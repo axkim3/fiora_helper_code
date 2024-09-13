@@ -1,6 +1,9 @@
+import matplotlib.pyplot as plt
+import sys
 import numpy as np
 from scipy.spatial.distance import cosine
 from collections import defaultdict
+from matplotlib.ticker import FuncFormatter
 
 def parse_pluskal_mgf_file(mgf_filename):
     spectra = []
@@ -68,14 +71,6 @@ def parse_fiora_mgf_file(mgf_filename):
     return spectra
 
 def cosine_similarity(spectrum1, spectrum2, mz_tolerance = 0.02):
-    """
-    Calculate the cosine similarity between two MS/MS spectra.
-    
-    :param spectrum1: List of (m/z, intensity) tuples for the first spectrum
-    :param spectrum2: List of (m/z, intensity) tuples for the second spectrum
-    :param mz_tolerance: Mass-to-charge ratio tolerance for matching peaks
-    :return: Cosine similarity score between 0 and 1
-    """
     # Create dictionaries to store m/z and intensity values
     spec1_dict = dict(spectrum1)
     spec2_dict = dict(spectrum2)
@@ -100,7 +95,7 @@ def cosine_similarity(spectrum1, spectrum2, mz_tolerance = 0.02):
     if np.sum(intensity1) == 0 or np.sum(intensity2) == 0:
         return 0.0  # Return 0 if either spectrum is empty
     
-    similarity = 1 - cosine(intensity1, intensity2)
+    similarity = 1000 * (1 - cosine(intensity1, intensity2))
     
     return similarity
 
@@ -111,24 +106,83 @@ def compare_spectra(experimental_spectra, fiora_spectra):
             if (exp_spec['title'] == fiora_spec['title'] and 
                 exp_spec['adduct'] == fiora_spec['adduct'] and 
                 exp_spec['collision_energy'] == fiora_spec['collision_energy']):
-                #print(f"TITLE: {exp_spec['title']}, Adduct: {exp_spec['adduct']}, Collision Energy: {exp_spec['collision_energy']}")
-                #print(i for i in exp_spec['peaks'])
-                #print(i for i in fiora_spec['peaks'])
                 similarity = cosine_similarity(exp_spec['peaks'], fiora_spec['peaks'])
-                similarities.append({
-                    'title': exp_spec['title'],
-                    'adduct': exp_spec['adduct'],
-                    'collision_energy': exp_spec['collision_energy'],
-                    'similarity': similarity
-                })
+                b = True
+                for i in similarities:
+                    if i['title'] == exp_spec['title']:
+                        if similarity < i['similarity']:
+                            b = False
+                        else:
+                            similarities.remove(i)
+                if b:
+                    similarities.append({
+                        'title': exp_spec['title'],
+                        'adduct': exp_spec['adduct'],
+                        'collision_energy': exp_spec['collision_energy'],
+                        'similarity': similarity,
+                        'exp_peaks': exp_spec['peaks'],
+                        'fiora_peaks': fiora_spec['peaks']
+                    })
     return similarities
 
+def plot_spectrum(ax, mz, intensity, color, label, direction = 1):
+    """Plot a single MS/MS spectrum with intensity direction."""
+    intensity = np.array(intensity) * direction
+    ax.stem(mz, intensity, linefmt=color, markerfmt=" ", basefmt=" ", label=label)
+
+    for m, i in zip(mz, intensity):
+        if abs(i)  > 10:
+            ax.text(m, i, f'{m:.2f}', va='bottom' if i > 0 else 'top', ha='center', fontsize=8)
+
+
+def abs_formatter(x, pos):
+    return f'{abs(int(x))}'
+
+def graph_spectra(spectra):
+    title = spectra['title']
+    exp_mz = [i[0] for i in spectra['exp_peaks']]
+    exp_intensity = [i[1] for i in spectra['exp_peaks']]
+    fiora_mz = [i[0] for i in spectra['fiora_peaks']]
+    m = 0
+    for i in spectra['fiora_peaks']:
+        m = max(i[1], m)
+    fiora_intensity = [100 * i[1] / m for i in spectra['fiora_peaks']]
+    
+    fig, ax = plt.subplots()
+
+    # Plot experimental spectrum upwards
+    plot_spectrum(ax, exp_mz, exp_intensity, 'b', 'Experimental', direction=1)
+    
+    # Plot theoretical spectrum downwards
+    plot_spectrum(ax, fiora_mz, fiora_intensity, 'r', 'Fiora', direction=-1)
+
+    ax.set_xlabel("m/z")
+    ax.set_ylabel("Intensity (%)")
+    ax.legend()
+    ax.set_title(f"Fiora Results for {spectra['title']} \nCosine Similarity: {spectra['similarity']:.4f}")
+    
+    # Set zero line
+    ax.axhline(0, color='black', linewidth=0.5)
+    ax.yaxis.set_major_formatter(FuncFormatter(abs_formatter))
+    plt.show()
+
+
+
 if __name__ == "__main__":
-    experimental_mgf = 'Pluskal/20231031_nihnp_library_pos_all_lib_MS2.mgf'  # Replace with your experimental .mgf file path
-    fiora_mgf = 'Pluskal-60-pos-Orbitrap-100-OUTPUT.mgf'  # Replace with your Fiora-generated .mgf file path
+    experimental_mgf = 'Pluskal/MS2/pos/20240411_mcebio_library_pos_all_lib_MS2.mgf'  # Replace with your experimental .mgf file path
+    fiora_mgf = 'Pluskal/MS2/pos/Pluskal-mcebio-fioraoutput.mgf'  # Replace with your Fiora-generated .mgf file path
     experimental_spectra = parse_pluskal_mgf_file(experimental_mgf)
     fiora_spectra = parse_fiora_mgf_file(fiora_mgf)
     similarities = compare_spectra(experimental_spectra, fiora_spectra)
-    
+
     for result in similarities:
+        #if result['title'] == 'STL568828':
+            #graph_spectra(result)
         print(f"TITLE: {result['title']}, Adduct: {result['adduct']}, Collision Energy: {result['collision_energy']}, Cosine Similarity: {result['similarity']:.4f}")
+    cos_similarities = [i['similarity'] for i in similarities]
+    plt.hist(cos_similarities, bins=30, color='skyblue', edgecolor='black')
+    # Adding labels and title
+    plt.xlabel('Cosine Similarity Values')
+    plt.ylabel('Frequency')
+    plt.title('Histogram of Cosine Similarities')
+    plt.show(block=True)
